@@ -518,3 +518,12 @@ button.small {
 #layout-table-wrap {
   overflow-x: auto;
 }
+
+/* 对称减针行程 */
+#shaping-result {
+  margin-top: 14px;
+}
+
+#shaping-table-wrap {
+  overflow-x: auto;
+}

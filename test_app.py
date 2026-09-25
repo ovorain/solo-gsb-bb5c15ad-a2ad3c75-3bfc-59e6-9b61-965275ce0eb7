@@ -1153,5 +1153,106 @@ class TestPatternLayoutApi(unittest.TestCase):
         self.assertLess(repeats[0], repeats[1])
 
 
+class TestShapingPlanApi(unittest.TestCase):
+    PAYLOAD = {
+        'start': 40,
+        'target': 20,
+        'rows': 10,
+        'max_decrease': 2,
+    }
+
+    def setUp(self):
+        self.client = app.test_client()
+
+    def post(self, **overrides):
+        payload = dict(self.PAYLOAD)
+        payload.update(overrides)
+        return self.client.post('/api/shaping-plan', json=payload).get_json()
+
+    def test_basic_plan(self):
+        data = self.post()
+        self.assertTrue(data['ok'])
+        self.assertEqual(data['total_decrease'], 20)
+        self.assertEqual(data['decrease_rows'], 5)
+        self.assertEqual(len(data['plan']), 10)
+        # 逐行左右减针相同，余针从起针数递减到目标针数
+        remaining = 40
+        for row in data['plan']:
+            self.assertEqual(row['left'], row['right'])
+            self.assertEqual(row['decrease'], 2 * row['left'])
+            remaining -= row['decrease']
+            self.assertEqual(row['remaining'], remaining)
+        self.assertEqual(data['plan'][-1]['remaining'], 20)
+        # 减针行之间至少隔一行平织
+        dec = [r['left'] for r in data['plan']]
+        self.assertTrue(all(not (dec[i] and dec[i + 1])
+                            for i in range(len(dec) - 1)))
+        # 容量恰好用尽：只能隔行各减 2，两种排法同分取字典序最小
+        self.assertEqual(dec, [0, 2, 0, 2, 0, 2, 0, 2, 0, 2])
+        self.assertEqual(data['deviation'], 5)
+        self.assertEqual(data['deviation_exact'], '5')
+
+    def test_tie_breaks_to_lexicographically_smallest(self):
+        # (1,0,1,0)、(1,0,0,1)、(0,1,0,1) 偏差同为 1/2，取 (0,1,0,1)
+        data = self.post(start=4, target=0, rows=4, max_decrease=1)
+        self.assertTrue(data['ok'])
+        self.assertEqual([r['left'] for r in data['plan']], [0, 1, 0, 1])
+        self.assertEqual(data['deviation'], 0.5)
+        self.assertEqual(data['deviation_exact'], '1/2')
+
+    def test_zero_decrease_when_target_equals_start(self):
+        data = self.post(start=10, target=10, rows=5)
+        self.assertTrue(data['ok'])
+        self.assertEqual(data['total_decrease'], 0)
+        self.assertEqual(data['decrease_rows'], 0)
+        self.assertTrue(all(r['decrease'] == 0 for r in data['plan']))
+        self.assertTrue(all(r['remaining'] == 10 for r in data['plan']))
+
+    def test_odd_difference_infeasible(self):
+        data = self.post(start=41)
+        self.assertFalse(data['ok'])
+        self.assertEqual(data['error']['type'], 'infeasible')
+        self.assertIn('奇数', data['error']['message'])
+        self.assertEqual(data['need_decrease'], 21)
+        self.assertEqual(data['max_decrease_rows'], 5)
+        self.assertEqual(data['max_total_decrease'], 20)
+
+    def test_insufficient_rows_infeasible(self):
+        # 需减 8 针（单侧 4），6 行最多 3 个减针行 × 单侧 1 → 最多减 6 针
+        data = self.post(start=12, target=4, rows=6, max_decrease=1)
+        self.assertFalse(data['ok'])
+        self.assertEqual(data['error']['type'], 'infeasible')
+        self.assertIn('最多只能减 6 针', data['error']['message'])
+        self.assertEqual(data['need_decrease'], 8)
+        self.assertEqual(data['decrease_rows_needed'], 4)
+        self.assertEqual(data['max_decrease_rows'], 3)
+        self.assertEqual(data['max_total_decrease'], 6)
+
+    def test_string_numbers_accepted(self):
+        data = self.post(start='40', target='20', rows='10', max_decrease='2')
+        self.assertTrue(data['ok'])
+        self.assertEqual(data['decrease_rows'], 5)
+
+    def test_bad_scalar_params(self):
+        cases = [
+            ('start', [0, -1, 'x', True, None, 1.5]),
+            ('target', [-1, 'x', True, None, 1.5]),
+            ('rows', [0, -1, 'x', True, None, 1.5]),
+            ('max_decrease', [0, 3, -1, 'x', True, None, 1.5]),
+        ]
+        for field, bad_values in cases:
+            for bad in bad_values:
+                data = self.post(**{field: bad})
+                self.assertFalse(data['ok'], msg='{}={!r}'.format(field, bad))
+                self.assertEqual(data['error']['type'], 'params',
+                                 msg='{}={!r}'.format(field, bad))
+
+    def test_target_above_start_rejected(self):
+        data = self.post(target=41)
+        self.assertFalse(data['ok'])
+        self.assertEqual(data['error']['type'], 'params')
+        self.assertIn('不能大于起针数', data['error']['message'])
+
+
 if __name__ == '__main__':
     unittest.main()
