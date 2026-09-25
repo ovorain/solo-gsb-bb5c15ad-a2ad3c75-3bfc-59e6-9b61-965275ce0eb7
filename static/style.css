@@ -518,3 +518,27 @@ button.small {
 #layout-table-wrap {
   overflow-x: auto;
 }
+
+/* 对称减针行程 */
+#shaping-max-decrease {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid #c9c2b2;
+  border-radius: 6px;
+  font-size: 1rem;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  background: #fff;
+}
+
+#shaping-result {
+  margin-top: 14px;
+}
+
+#shaping-table-wrap {
+  overflow-x: auto;
+}
+
+#shaping-table-wrap tr.shaping-decrease-row td {
+  background: #f1ece0;
+  font-weight: 600;
+}

@@ -1114,3 +1114,124 @@ for (const key of Object.keys(layoutInputs)) {
 for (const s of LAYOUT_EXAMPLE.sizes) {
   addLayoutSizeRow(s.name, s.target);
 }
+
+// ---------------------------------------------------------------------------
+// 对称减针行程
+// ---------------------------------------------------------------------------
+
+const shapingForm = document.getElementById('shaping-form');
+const shapingMessage = document.getElementById('shaping-message');
+const shapingResult = document.getElementById('shaping-result');
+const shapingMeta = document.getElementById('shaping-meta');
+const shapingTableWrap = document.getElementById('shaping-table-wrap');
+const shapingInputs = {
+  cast_on: document.getElementById('shaping-cast-on'),
+  target: document.getElementById('shaping-target'),
+  rows: document.getElementById('shaping-rows'),
+  max_decrease: document.getElementById('shaping-max-decrease'),
+};
+
+const SHAPING_EXAMPLE = {
+  cast_on: '70',
+  target: '40',
+  rows: '15',
+  max_decrease: '2',
+};
+
+function showShapingMessage(text, ok) {
+  shapingMessage.textContent = text;
+  shapingMessage.className = 'move-message ' + (ok ? 'ok' : 'error');
+  shapingMessage.hidden = false;
+}
+
+function hideShapingMessage() {
+  shapingMessage.hidden = true;
+  shapingMessage.textContent = '';
+}
+
+document.getElementById('shaping-fill-example').addEventListener('click', () => {
+  for (const key of Object.keys(shapingInputs)) {
+    shapingInputs[key].value = SHAPING_EXAMPLE[key];
+  }
+  hideShapingMessage();
+  shapingResult.hidden = true;
+});
+
+function renderShaping(data) {
+  shapingTableWrap.replaceChildren();
+  shapingResult.hidden = false;
+  shapingMeta.textContent =
+    '起针 ' + data.cast_on + ' 针 → 目标 ' + data.target + ' 针' +
+    '　｜　共减 ' + data.total_decrease + ' 针（单侧 ' + data.per_side + ' 针）' +
+    '　｜　' + data.rows + ' 行中 ' + data.decrease_rows + ' 个减针行' +
+    '（减针行之间至少隔一行平织）' +
+    '　｜　平方偏差和：' + data.cost;
+
+  const table = document.createElement('table');
+  const thead = document.createElement('thead');
+  const headRow = document.createElement('tr');
+  for (const label of ['行号', '左减针', '右减针', '本行共减', '累计减针',
+                       '行末余针', '目标进度']) {
+    const th = document.createElement('th');
+    th.textContent = label;
+    headRow.appendChild(th);
+  }
+  thead.appendChild(headRow);
+  table.appendChild(thead);
+
+  const tbody = document.createElement('tbody');
+  for (const row of data.plan) {
+    const tr = document.createElement('tr');
+    tr.className = row.decrease > 0 ? 'shaping-decrease-row' : '';
+    const values = [
+      row.row,
+      row.left > 0 ? '−' + row.left : '—',
+      row.right > 0 ? '−' + row.right : '—',
+      row.decrease > 0 ? '−' + row.decrease : '平织',
+      row.decreased,
+      row.remaining + ' 针',
+      row.progress,
+    ];
+    for (const value of values) {
+      const td = document.createElement('td');
+      td.textContent = value;
+      tr.appendChild(td);
+    }
+    tbody.appendChild(tr);
+  }
+  table.appendChild(tbody);
+  shapingTableWrap.appendChild(table);
+}
+
+shapingForm.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  hideShapingMessage();
+  shapingResult.hidden = true;
+
+  let data;
+  try {
+    const res = await fetch('/api/shaping-plan', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        cast_on: shapingInputs.cast_on.value,
+        target: shapingInputs.target.value,
+        rows: shapingInputs.rows.value,
+        max_decrease: shapingInputs.max_decrease.value,
+      }),
+    });
+    data = await res.json();
+  } catch (err) {
+    showShapingMessage('减针行程请求失败：' + err.message, false);
+    return;
+  }
+
+  if (!data.ok) {
+    // 无解或参数非法：说明原因（含最多可减针数）
+    showShapingMessage(data.error ? data.error.message : '计算失败：未知错误', false);
+    return;
+  }
+  showShapingMessage(
+    '已排出 ' + data.rows + ' 行减针行程，末行余针恰好 ' + data.target + ' 针。', true);
+  renderShaping(data);
+});

@@ -95,6 +95,28 @@ POST /api/pattern-layout  多尺码对称花样排针
     重复数范围（min_repeats > max_repeats 表示该尺码单独即无可行重复）。
   参数非法: {"ok": false, "error": {"type": "params"|"sizes", "message"}}
 
+POST /api/shaping-plan  对称减针行程（左右相同减针数的逐行安排）
+  请求: {"cast_on": 70, "target": 40, "rows": 15, "max_decrease": 2}
+    cast_on 为起针数、target 为目标针数（末行余针）、rows 为总行数
+    （均为正整数）；max_decrease 为每个减针行单侧最多减针数（1 或 2）。
+    逐行安排左右相同的减针数（每行单侧 0~max_decrease 针，0 为平织行），
+    减针行之间至少隔一行平织，末行余针须等于目标针数。在满足约束的
+    方案中最小化各行累计减针数与线性目标进度（D×行号/总行数）的平方
+    偏差之和，同分取逐行单侧减针数组字典序最小的方案；求解由
+    shaping_plan.solve_shaping 完成（动态规划，分数精确计算）。
+  成功: {"ok": true, "cast_on", "target", "rows", "max_decrease",
+         "total_decrease", "per_side", "decrease_rows", "cost",
+         "plan": [{"row", "left", "right", "decrease", "decreased",
+                   "remaining", "progress"}, ...]}
+    cost 为最小平方偏差和（保留四位小数）；plan 逐行给出左右减针数、
+    本行共减、截至本行累计减针（双侧）、行末余针与线性目标进度
+    （progress 保留两位小数）。
+  无解: {"ok": false, "error": {"type": "infeasible", "message"},
+         "total_decrease", "max_decrease_rows", "max_total_decrease", ...}
+    message 说明原因（目标针数比起针数多 / 差为奇数 / 行数不够），
+    max_total_decrease 为约束下最多可减针数（双侧合计）。
+  参数非法: {"ok": false, "error": {"type": "params", "message"}}
+
 逐行推算规则：每个尺码独立地以上一行的产出作为下一行的可用针数；某尺码
 消耗与可用针数不一致（不足或超出）时，仅该尺码停止并记录行号与差额，
 其余尺码继续推算。指令本身无法解析（含 *{a|b} 项数与尺码数不符、倍数
@@ -124,6 +146,7 @@ from fractions import Fraction
 from flask import Flask, jsonify, render_template, request
 
 from pattern_layout import solve_layout
+from shaping_plan import solve_shaping
 from stitch_parser import (
     STITCH_NAMES,
     ParseError,
@@ -900,6 +923,99 @@ def pattern_layout():
             "width": _cm(s["width"]),
             "deviation": _cm(s["deviation"]),
         } for i, s in enumerate(result["sizes"])],
+    })
+
+
+@app.post("/api/shaping-plan")
+def shaping_plan():
+    """对称减针行程：逐行安排左右相同的减针数，末行余针恰好等于目标针数。
+
+    每行单侧减 0~max_decrease 针（0 为平织行），左右两侧减针数相同；
+    减针行之间至少隔一行平织。在满足约束的方案中最小化各行累计减针数
+    与线性目标进度（总减针数×行号/总行数）的平方偏差之和，同分取逐行
+    单侧减针数组字典序最小的方案。求解由 shaping_plan.solve_shaping
+    完成（动态规划，分数精确计算）。
+    """
+    data = request.get_json(silent=True) or {}
+
+    cast_on, err = _parse_cast_on(data.get("cast_on"))
+    if err:
+        return jsonify({"ok": False, "error": {"type": "params", "message": err}})
+
+    target, err = _parse_nonneg_int(data.get("target"), "目标针数", positive=True)
+    if err:
+        return jsonify({"ok": False, "error": {"type": "params", "message": err}})
+
+    rows, err = _parse_nonneg_int(data.get("rows"), "总行数", positive=True)
+    if err:
+        return jsonify({"ok": False, "error": {"type": "params", "message": err}})
+
+    max_decrease, err = _parse_nonneg_int(
+        data.get("max_decrease"), "每个减针行单侧最多减针数")
+    if err:
+        return jsonify({"ok": False, "error": {"type": "params", "message": err}})
+    if max_decrease not in (1, 2):
+        return jsonify({
+            "ok": False,
+            "error": {"type": "params",
+                      "message": "每个减针行单侧最多减针数必须为 1 或 2"},
+        })
+
+    result = solve_shaping(cast_on, target, rows, max_decrease)
+
+    if not result["ok"]:
+        total = result["total_decrease"]
+        max_total = result["max_total_decrease"]
+        max_rows = result["max_decrease_rows"]
+        reason = result["reason"]
+        if reason == "target_exceeds":
+            message = (
+                "目标针数 {} 大于起针数 {}：对称减针行程只能减针、无法加针；"
+                "按当前行数与减针上限，最多可减 {} 针".format(
+                    target, cast_on, max_total))
+        elif reason == "odd_decrease":
+            message = (
+                "起针数与目标针数相差 {} 针（奇数）：左右对称减针每次共减"
+                "偶数针，无法恰好减到目标针数；按当前行数与减针上限，"
+                "最多可减 {} 针".format(total, max_total))
+        else:
+            message = (
+                "需要共减 {} 针（单侧 {} 针），但 {} 行内减针行两两至少隔"
+                "一行平织，最多 {} 个减针行、每行单侧最多 {} 针，最多可减 "
+                "{} 针，还差 {} 针".format(
+                    total, total // 2, rows, max_rows, max_decrease,
+                    max_total, total - max_total))
+        return jsonify({
+            "ok": False,
+            "error": {"type": "infeasible", "message": message},
+            "cast_on": cast_on,
+            "target": target,
+            "rows": rows,
+            "max_decrease": max_decrease,
+            "total_decrease": total,
+            "max_decrease_rows": max_rows,
+            "max_total_decrease": max_total,
+        })
+
+    return jsonify({
+        "ok": True,
+        "cast_on": cast_on,
+        "target": target,
+        "rows": rows,
+        "max_decrease": max_decrease,
+        "total_decrease": result["total_decrease"],
+        "per_side": result["per_side"],
+        "decrease_rows": result["decrease_rows"],
+        "cost": round(float(result["cost"]), 4),
+        "plan": [{
+            "row": p["row"],
+            "left": p["left"],
+            "right": p["right"],
+            "decrease": p["decrease"],
+            "decreased": p["decreased"],
+            "remaining": p["remaining"],
+            "progress": round(float(p["progress"]), 2),
+        } for p in result["plan"]],
     })
 
 

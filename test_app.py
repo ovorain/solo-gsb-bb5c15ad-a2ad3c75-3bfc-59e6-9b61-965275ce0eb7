@@ -1153,5 +1153,128 @@ class TestPatternLayoutApi(unittest.TestCase):
         self.assertLess(repeats[0], repeats[1])
 
 
+class TestShapingPlanApi(unittest.TestCase):
+    PAYLOAD = {
+        'cast_on': 70,
+        'target': 40,
+        'rows': 15,
+        'max_decrease': 2,
+    }
+
+    def setUp(self):
+        self.client = app.test_client()
+
+    def post(self, **overrides):
+        payload = dict(self.PAYLOAD)
+        payload.update(overrides)
+        return self.client.post('/api/shaping-plan', json=payload).get_json()
+
+    def test_basic_plan(self):
+        data = self.post()
+        self.assertTrue(data['ok'])
+        self.assertEqual(data['total_decrease'], 30)
+        self.assertEqual(data['per_side'], 15)
+        self.assertEqual(len(data['plan']), 15)
+        plan = data['plan']
+        # 逐行字段：行号连续、左右相同、本行共减 = 左 + 右
+        for i, row in enumerate(plan, 1):
+            self.assertEqual(row['row'], i)
+            self.assertEqual(row['left'], row['right'])
+            self.assertEqual(row['decrease'], row['left'] + row['right'])
+            self.assertIn(row['left'], (0, 1, 2))
+            self.assertEqual(row['remaining'], 70 - row['decreased'])
+        # 减针行之间至少隔一行平织
+        for i in range(len(plan) - 1):
+            self.assertFalse(plan[i]['decrease'] and plan[i + 1]['decrease'])
+        # 末行余针恰好等于目标针数
+        self.assertEqual(plan[-1]['remaining'], 40)
+        self.assertEqual(plan[-1]['decreased'], 30)
+        self.assertEqual(data['decrease_rows'],
+                         sum(1 for r in plan if r['decrease']))
+
+    def test_tie_breaks_to_lexicographically_smallest(self):
+        # [1,0,1,0]、[1,0,0,1]、[0,1,0,1] 代价同为 2，取字典序最小的 [0,1,0,1]
+        data = self.post(cast_on=12, target=8, rows=4, max_decrease=2)
+        self.assertTrue(data['ok'])
+        self.assertEqual([r['left'] for r in data['plan']], [0, 1, 0, 1])
+        self.assertEqual(data['cost'], 2)
+        self.assertEqual([r['remaining'] for r in data['plan']],
+                         [12, 10, 10, 8])
+
+    def test_progress_is_linear(self):
+        # 目标进度 = 总减针数 × 行号 ÷ 总行数（保留两位小数）
+        data = self.post(cast_on=10, target=4, rows=5, max_decrease=1)
+        self.assertTrue(data['ok'])
+        self.assertEqual([r['progress'] for r in data['plan']],
+                         [1.2, 2.4, 3.6, 4.8, 6.0])
+
+    def test_string_numbers_accepted(self):
+        data = self.post(cast_on='70', target='40', rows='15',
+                         max_decrease='2')
+        self.assertTrue(data['ok'])
+        self.assertEqual(len(data['plan']), 15)
+
+    def test_no_decrease_needed(self):
+        data = self.post(cast_on=20, target=20, rows=6, max_decrease=2)
+        self.assertTrue(data['ok'])
+        self.assertEqual(data['cost'], 0)
+        self.assertEqual(data['decrease_rows'], 0)
+        self.assertTrue(all(r['decrease'] == 0 for r in data['plan']))
+
+    def test_bad_scalar_params(self):
+        cases = [
+            ('cast_on', [0, -1, 'x', True, None, 1.5]),
+            ('target', [0, -1, 'x', True, None, 1.5]),
+            ('rows', [0, -1, 'x', True, None, 1.5]),
+            ('max_decrease', [0, 3, -1, 'x', True, None, 1.5]),
+        ]
+        for field, bad_values in cases:
+            for bad in bad_values:
+                data = self.post(**{field: bad})
+                self.assertFalse(data['ok'], msg='{}={!r}'.format(field, bad))
+                self.assertEqual(data['error']['type'], 'params',
+                                 msg='{}={!r}'.format(field, bad))
+
+    def test_max_decrease_must_be_1_or_2(self):
+        # 12→8（单侧 2）、4 行：单侧上限 1 或 2 都可行
+        for good in (1, 2):
+            data = self.post(cast_on=12, target=8, rows=4, max_decrease=good)
+            self.assertTrue(data['ok'], msg='max_decrease={!r}'.format(good))
+        for bad in (0, 3, 4):
+            data = self.post(max_decrease=bad)
+            self.assertFalse(data['ok'], msg='max_decrease={!r}'.format(bad))
+            self.assertEqual(data['error']['type'], 'params')
+            self.assertIn('1 或 2', data['error']['message'])
+
+    def test_infeasible_target_exceeds(self):
+        data = self.post(cast_on=10, target=12)
+        self.assertFalse(data['ok'])
+        self.assertEqual(data['error']['type'], 'infeasible')
+        self.assertIn('大于起针数', data['error']['message'])
+        self.assertIn('最多可减', data['error']['message'])
+        self.assertEqual(data['total_decrease'], -2)
+        # 15 行、单侧上限 2：最多 8 个减针行，双侧最多可减 32 针
+        self.assertEqual(data['max_decrease_rows'], 8)
+        self.assertEqual(data['max_total_decrease'], 32)
+
+    def test_infeasible_odd_decrease(self):
+        data = self.post(cast_on=10, target=5, rows=5, max_decrease=2)
+        self.assertFalse(data['ok'])
+        self.assertEqual(data['error']['type'], 'infeasible')
+        self.assertIn('奇数', data['error']['message'])
+        self.assertIn('最多可减', data['error']['message'])
+        self.assertEqual(data['max_total_decrease'], 12)
+
+    def test_infeasible_insufficient_rows(self):
+        # 20→4 共减 16 针，3 行、单侧上限 1：最多 2 个减针行、共减 4 针
+        data = self.post(cast_on=20, target=4, rows=3, max_decrease=1)
+        self.assertFalse(data['ok'])
+        self.assertEqual(data['error']['type'], 'infeasible')
+        self.assertIn('最多可减 4 针', data['error']['message'])
+        self.assertIn('还差 12 针', data['error']['message'])
+        self.assertEqual(data['max_decrease_rows'], 2)
+        self.assertEqual(data['max_total_decrease'], 4)
+
+
 if __name__ == '__main__':
     unittest.main()

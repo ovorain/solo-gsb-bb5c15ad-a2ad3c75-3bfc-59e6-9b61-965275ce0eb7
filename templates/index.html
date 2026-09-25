@@ -249,6 +249,50 @@
         <div id="layout-table-wrap"></div>
       </section>
     </section>
+
+    <section class="preview-section" id="shaping-section">
+      <h2>对称减针行程</h2>
+      <p class="hint">
+        输入起针数、目标针数、总行数与每个减针行单侧最多减针数（1 或 2），逐行安排
+        左右相同的减针数：减针行之间至少隔一行平织，末行余针恰好等于目标针数。
+        在满足约束的方案中，让各行累计减针数与线性目标进度（总减针数×行号÷总行数）
+        的平方偏差之和最小，同分取逐行单侧减针数组字典序最小的方案；无解时会说明
+        最多可减针数及原因。
+      </p>
+      <form id="shaping-form">
+        <div class="layout-grid">
+          <label class="layout-item">
+            <span>起针数</span>
+            <input type="number" id="shaping-cast-on" min="1" step="1" value="70" required>
+          </label>
+          <label class="layout-item">
+            <span>目标针数（末行余针）</span>
+            <input type="number" id="shaping-target" min="1" step="1" value="40" required>
+          </label>
+          <label class="layout-item">
+            <span>总行数</span>
+            <input type="number" id="shaping-rows" min="1" step="1" value="15" required>
+          </label>
+          <label class="layout-item">
+            <span>每减针行单侧最多减针数</span>
+            <select id="shaping-max-decrease">
+              <option value="1">1</option>
+              <option value="2" selected>2</option>
+            </select>
+          </label>
+        </div>
+
+        <div class="actions">
+          <button type="submit">计算减针行程</button>
+          <button type="button" id="shaping-fill-example">填入示例</button>
+        </div>
+      </form>
+      <div id="shaping-message" class="move-message" hidden></div>
+      <section id="shaping-result" hidden>
+        <div id="shaping-meta" class="preview-meta"></div>
+        <div id="shaping-table-wrap"></div>
+      </section>
+    </section>
   </main>
 
   <script src="{{ url_for('static', filename='app.js') }}"></script>
